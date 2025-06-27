@@ -1,0 +1,59 @@
+templates:
+  - "templates/web.template.yml"
+  - "templates/web.ratelimited.template.yml"
+  - "templates/cloudflare.template.yml"
+expose:
+  - "80:80"
+  - "443:443"
+params:
+  db_default_text_search_config: "pg_catalog.english"
+  db_shared_buffers: "4096MB"
+  version: tests-passed
+
+# docker_args: "--net=host"
+# docker_args: "--network=discourse_build_network"
+
+env:
+  LC_ALL: en_US.UTF-8
+  LANG: en_US.UTF-8
+  LANGUAGE: en_US.UTF-8
+  DISCOURSE_HOSTNAME: 'forum.tinyrack.net'
+  DISCOURSE_DB_HOST: ""
+  DISCOURSE_DB_PORT: ""
+  DISCOURSE_DB_NAME: "" 
+  DISCOURSE_DB_USERNAME: ""
+  DISCOURSE_DB_PASSWORD: ""
+
+  DISCOURSE_REDIS_HOST: ""
+  DISCOURSE_REDIS_PORT: ""
+  DISCOURSE_REDIS_USERNAME: ""
+  DISCOURSE_REDIS_PASSWORD: ""
+
+volumes:
+  - volume:
+      host: /var/discourse/shared/standalone
+      guest: /shared
+  - volume:
+      host: /var/discourse/shared/standalone/log/var-log
+      guest: /var/log
+
+hooks:
+  after_code:
+    - exec:
+        cd: $home/plugins
+        cmd:
+          - git clone https://github.com/discourse/docker_manager.git
+          - git clone https://github.com/discourse/discourse-doc-categories.git
+          - git clone https://github.com/discourse/discourse-data-explorer.git
+          - git clone https://github.com/discourse/discourse-reactions
+          - git clone https://github.com/discourse/discourse-solved
+          - git clone https://github.com/discourse/discourse-apple-auth
+          - git clone https://github.com/discourse/discourse-ai
+          - git clone https://github.com/discourse/discourse-rss-polling.git
+          - git clone https://github.com/discourse/discourse-bbcode
+          - git clone https://github.com/discourse/discourse-translator
+          - git clone https://github.com/discourse/discourse-topic-voting
+          - git clone https://github.com/discourse/discourse-post-voting
+          - git clone https://github.com/discourse/discourse-adplugin
+          - git clone https://github.com/discourse/discourse-prometheus
+          - git clone https://github.com/naidihr/discourse-category-headers

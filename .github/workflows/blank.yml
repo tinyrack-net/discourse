@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Clone discourse_docker repository
+        uses: actions/checkout@v4
+        with:
+          repository: discourse/discourse_docker
+          path: ./discourse_docker
+
+      - name: Connect to Cluster Network (Tailscale)
+        uses: tailscale/github-action@v3
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:ci
+          args: --accept-routes
+
+      - name: Update app.yml with secrets
+        run: |
+          yq eval '.env.DISCOURSE_DB_HOST = "${{ secrets.DISCOURSE_DB_HOST }}"' -i containers/app.yml
+          yq eval '.env.DISCOURSE_DB_PORT = "${{ secrets.DISCOURSE_DB_PORT }}"' -i containers/app.yml
+          yq eval '.env.DISCOURSE_DB_NAME = "${{ secrets.DISCOURSE_DB_NAME }}"' -i containers/app.yml
+          yq eval '.env.DISCOURSE_DB_USERNAME = "${{ secrets.DISCOURSE_DB_USERNAME }}"' -i containers/app.yml
+          yq eval '.env.DISCOURSE_DB_PASSWORD = "${{ secrets.DISCOURSE_DB_PASSWORD }}"' -i containers/app.yml
+
+          yq eval '.env.DISCOURSE_REDIS_HOST = "${{ secrets.DISCOURSE_REDIS_HOST }}"' -i containers/app.yml
+          yq eval '.env.DISCOURSE_REDIS_PORT = "${{ secrets.DISCOURSE_REDIS_PORT }}"' -i containers/app.yml
+          yq eval '.env.DISCOURSE_REDIS_USERNAME = "${{ secrets.DISCOURSE_REDIS_USERNAME }}"' -i containers/app.yml
+          yq eval '.env.DISCOURSE_REDIS_PASSWORD = "${{ secrets.DISCOURSE_REDIS_PASSWORD }}"' -i containers/app.yml
+      
+      - name: Copy to discourse_docker
+        run: |
+          cp containers/app.yml ./discourse_docker/containers/app.yml
+      
+      - name: Build discourse_docker
+        run: |
+          cd ./discourse_docker
+          ./launcher bootstrap app
+     
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: tinyrack94
+          password: ${{ secrets.GH_PAT }}
+    
+      - name: Push discourse docker image
+        run: |
+          docker tag local_discourse/app ghcr.io/tinyrack-net/discourse:latest
+          docker tag local_discourse/app ghcr.io/tinyrack-net/discourse:${{ github.run_number }}
+          docker push ghcr.io/tinyrack-net/discourse:latest
+          docker push ghcr.io/tinyrack-net/discourse:${{ github.run_number }}
