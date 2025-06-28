@@ -1,5 +1,4 @@
-name: CI
-
+name: Build Latest Image
 on:
   workflow_dispatch:
 
