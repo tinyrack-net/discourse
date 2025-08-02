@@ -44,7 +44,6 @@ hooks:
         cmd:
           - git clone https://github.com/discourse/docker_manager.git
           - git clone https://github.com/discourse/discourse-solved
-          - git clone https://github.com/discourse/discourse-ai
           - git clone https://github.com/discourse/discourse-topic-voting
           - git clone https://github.com/discourse/discourse-adplugin
           - git clone https://github.com/discourse/discourse-doc-categories.git
