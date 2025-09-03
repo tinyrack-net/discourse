@@ -8,7 +8,7 @@ expose:
 params:
   db_default_text_search_config: "pg_catalog.english"
   db_shared_buffers: "4096MB"
-  version: v3.5.0.beta9
+  version: v3.5.0
 
 # docker_args: "--net=host"
 # docker_args: "--network=discourse_build_network"
