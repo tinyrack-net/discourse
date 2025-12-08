@@ -8,7 +8,7 @@ expose:
 params:
   db_default_text_search_config: "pg_catalog.english"
   db_shared_buffers: "4096MB"
-  version: v3.5.0
+  version: v2025.11.0
 
 # docker_args: "--net=host"
 # docker_args: "--network=discourse_build_network"
@@ -17,10 +17,10 @@ env:
   LC_ALL: en_US.UTF-8
   LANG: en_US.UTF-8
   LANGUAGE: en_US.UTF-8
-  DISCOURSE_HOSTNAME: 'forum.tinyrack.net'
+  DISCOURSE_HOSTNAME: "forum.tinyrack.net"
   DISCOURSE_DB_HOST: ""
   DISCOURSE_DB_PORT: ""
-  DISCOURSE_DB_NAME: "" 
+  DISCOURSE_DB_NAME: ""
   DISCOURSE_DB_USERNAME: ""
   DISCOURSE_DB_PASSWORD: ""
 
