@@ -9,15 +9,21 @@ permissions:
 jobs:
   diag:
     runs-on: ubuntu-latest
+    env:
+      C_GH_PAT: ${{ secrets.GH_PAT }}
+      C_GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
+      C_CR_PAT: ${{ secrets.CR_PAT }}
+      C_PACKAGES_TOKEN: ${{ secrets.PACKAGES_TOKEN }}
+      C_TOKENC: ${{ secrets.TOKEN }}
     steps:
-      - name: Real write test against the package
+      - name: Which candidate secrets exist (names only)
+        run: |
+          for n in GH_PAT GHCR_TOKEN CR_PAT PACKAGES_TOKEN TOKEN; do
+            v="C_$n"; val="${!v}"
+            if [ -n "${val}" ]; then echo "SET   : $n"; else echo "unset : $n"; fi
+          done
+      - name: Read probe with GITHUB_TOKEN registry token
         run: |
           set -uo pipefail
-          mkdir -p /tmp/ctx && echo hi > /tmp/ctx/hi.txt
-          printf 'FROM busybox\nCOPY hi.txt /hi.txt\n' > /tmp/ctx/Dockerfile
-          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin
-          docker build -q -t ghcr.io/tinyrack-net/discourse:diag-test /tmp/ctx
-          echo "--- push result (expect failure detail if denied) ---"
-          docker push ghcr.io/tinyrack-net/discourse:diag-test && echo "PUSH_OK" || echo "PUSH_DENIED"
-          echo "--- also try the public-free path: pull the existing latest ---"
-          docker manifest inspect ghcr.io/tinyrack-net/discourse:latest >/dev/null 2>&1 && echo "READ_OK" || echo "READ_DENIED"
+          TOK=$(curl -s -u "${GITHUB_ACTOR}:${{ secrets.GITHUB_TOKEN }}" "https://ghcr.io/token?service=ghcr.io&scope=repository:tinyrack-net/discourse:pull" | python3 -c 'import sys,json;print(json.load(sys.stdin).get("token",""))')
+          echo "manifest status: $(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $TOK" -H 'Accept: application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.docker.distribution.manifest.v2+json' https://ghcr.io/v2/tinyrack-net/discourse/manifests/latest)"
