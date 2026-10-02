@@ -1,0 +1,38 @@
+name: Diagnose GHCR Token
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Decode the GHCR token issued for GITHUB_TOKEN
+        run: |
+          set -euo pipefail
+          RESP=$(curl -s -u "${GITHUB_ACTOR}:${{ secrets.GITHUB_TOKEN }}" \
+            "https://ghcr.io/token?service=ghcr.io&scope=repository:tinyrack-net/discourse:pull,push")
+          echo "raw: $(printf '%s' "$RESP" | head -c 160)"
+          TOK=$(printf '%s' "$RESP" | python3 -c 'import sys,json;print(json.load(sys.stdin).get("token",""))')
+          [ -n "$TOK" ] || { echo "::error::no token returned"; exit 1; }
+          PAY=$(printf '%s' "$TOK" | cut -d. -f2)
+          pad=$(( (4 - ${#PAY} % 4) % 4 ))
+          PAY="${PAY}$(printf '=%.0s' $(seq 1 $pad))"
+          echo "--- JWT payload ---"
+          printf '%s' "$PAY" | tr '_-' '/+' | base64 -d || printf '%s' "$PAY" | base64 -D
+          echo
+      - name: Real write test against the package
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/ctx && echo hi > /tmp/ctx/hi.txt
+          printf 'FROM busybox\nCOPY hi.txt /hi.txt\n' > /tmp/ctx/Dockerfile
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin
+          docker build -q -t ghcr.io/tinyrack-net/discourse:diag-test /tmp/ctx
+          if docker push ghcr.io/tinyrack-net/discourse:diag-test; then
+            echo "PUSH_OK"
+          else
+            echo "::error::PUSH_DENIED"
+          fi
