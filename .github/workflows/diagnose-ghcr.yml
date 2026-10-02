@@ -10,37 +10,18 @@ jobs:
   diag:
     runs-on: ubuntu-latest
     steps:
-      - name: Show the identity + token that Actions gives us
+      - name: Show the identity Actions gives us
         run: |
-          echo "actor=$GITHUB_ACTOR  trigger=${GITHUB_TRIGGERING_ACTOR:-n/a}  repo=$GITHUB_REPOSITORY"
+          echo "actor=$GITHUB_ACTOR trigger=${GITHUB_TRIGGERING_ACTOR:-n/a} repo=$GITHUB_REPOSITORY"
           echo "run_id=$GITHUB_RUN_ID ref=$GITHUB_REF"
-          echo "token prefix: $(printf '%s' '${{ secrets.GITHUB_TOKEN }}' | cut -c1-8)"
       - name: Probe GHCR access for the token (no secret printing)
         run: |
           set -uo pipefail
-          TOK=$(curl -s -u "${GITHUB_ACTOR}:${{ secrets.GITHUB_TOKEN }}" \
-            "https://ghcr.io/token?service=ghcr.io&scope=repository:tinyrack-net/discourse:pull,push" \
-            | python3 -c 'import sys,json;print(json.load(sys.stdin).get("token",""))')
-          [ -n "$TOK" ] || { echo "::error::no registry token"; exit 1; }
-          echo "--- GET /v2/ with token ---"
-          curl -s -o /dev/null -w '%{http_code}\n' -H "Authorization: Bearer $TOK" https://ghcr.io/v2/
-          echo "--- granted access claim ---"
-          printf '%s' "$TOK" | python3 - <<'PY'
-import sys, base64, json
-t = sys.stdin.read().strip()
-# token may be "ghs_<id>_<base64url>@<base64url>" style; find the JWT-ish part
-cands = [t]
-if t.startswith("ghs_"):
-    core = t[4:]
-    cands.append(core.split("_", 1)[-1])
-for c in cands:
-    for part in c.split(".")[1:2]:
-        p = part + "=" * (-len(part) % 4)
-        try:
-            print(json.dumps(json.loads(base64.urlsafe_b64decode(p))))
-        except Exception as e:
-            pass
-PY
+          TOK=$(curl -s -u "${GITHUB_ACTOR}:${{ secrets.GITHUB_TOKEN }}" "https://ghcr.io/token?service=ghcr.io&scope=repository:tinyrack-net/discourse:pull,push" | python3 -c 'import sys,json;print(json.load(sys.stdin).get("token",""))')
+          [ -n "$TOK" ] || { echo "no registry token"; exit 1; }
+          echo "GET /v2/ status: $(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $TOK" https://ghcr.io/v2/)"
+          echo "granted access claim:"
+          python3 -c "import sys,base64,json;t=sys.argv[1];c=t[4:].split('_',1)[-1] if t.startswith('ghs_') else t;p=c.split('.')[1];p=p+'='*(-len(p)%4);print(json.dumps(json.loads(base64.urlsafe_b64decode(p)),indent=2))" "$TOK"
       - name: Real write test against the package
         run: |
           set -uo pipefail
