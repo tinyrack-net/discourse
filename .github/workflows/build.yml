@@ -26,7 +26,7 @@ concurrency:
 env:
   IMAGE: ghcr.io/tinyrack-net/discourse
   BASE_IMAGE: discourse/base:web-only-stable
-  PLUGINS: discourse-doc-categories,discourse-bbcode,discourse-translator,discourse-prometheus
+  PLUGINS: discourse-doc-categories,discourse-bbcode,discourse-translator
   BUILDKIT_PROGRESS: plain
 
 permissions:
@@ -212,20 +212,21 @@ jobs:
             --label="org.tinyrack.discourse.base-image=${BASE_IMAGE}" \
             --label="org.tinyrack.discourse.plugins=${PLUGINS}"
 
-      - name: "Gate 1 — 플러그인 4종이 이미지에 포함되어 있는가"
+      - name: "Gate 1 — 플러그인 3종이 이미지에 포함되어 있는가"
         env:
           IMAGE_REF: ${{ env.IMAGE }}:${{ env.IMAGE_TAG }}
         run: |
           set -euo pipefail
           docker run --rm --entrypoint /bin/bash "${IMAGE_REF}" -c '
             set -euo pipefail
-            for plugin in discourse-doc-categories discourse-bbcode discourse-translator discourse-prometheus; do
+            for plugin in discourse-doc-categories discourse-bbcode discourse-translator; do
               test -d "/var/www/discourse/plugins/${plugin}" || { echo "::error::플러그인 디렉터리 누락: ${plugin}"; exit 1; }
               test -f "/var/www/discourse/plugins/${plugin}/plugin.rb" || { echo "::error::plugin.rb 누락: ${plugin}"; exit 1; }
               echo "ok: ${plugin}"
             done
             test ! -d /var/www/discourse/plugins/docker_manager || { echo "::error::docker_manager 가 제거되지 않았습니다"; exit 1; }
             test ! -d /var/www/discourse/plugins/discourse-category-headers || { echo "::error::discourse-category-headers 가 제거되지 않았습니다"; exit 1; }
+            test ! -d /var/www/discourse/plugins/discourse-prometheus || { echo "::error::discourse-prometheus 가 제거되지 않았습니다"; exit 1; }
           '
 
       - name: "Gate 2 — Ember/플러그인 에셋 번들이 빌드되었는가"

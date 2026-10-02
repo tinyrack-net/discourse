@@ -42,10 +42,10 @@ postgres/redis 가 떠 있을 필요도 없으며", 코드상 `pups --skip-tags=
 | `discourse-doc-categories` | |
 | `discourse-bbcode` | |
 | `discourse-translator` | |
-| `discourse-prometheus` | |
 
 `docker_manager` 는 k8s 에서 동작하지 않아 제거했어요. `discourse-category-headers` 는
 `plugin.rb` 가 없는 테마 컴포넌트라 `plugins/` 로 클론해도 효과가 없어 제거했어요.
+`discourse-prometheus` 는 클러스터에서 이 파드의 메트릭을 스크레이프하지 않아 제거했어요.
 
 ## 태깅 규약
 
@@ -77,7 +77,7 @@ postgres/redis 가 떠 있을 필요도 없으며", 코드상 `pups --skip-tags=
 - **build**: `discourse_docker` 를 클론하고 Launcher V2 바이너리를 설치한 뒤
   `discourse/base:web-only-stable` 기반으로 빌드해요. 이때 이미지는 **러너 로컬에만** 있어요.
 - **verify**: 푸시하기 전에 로컬 이미지로 5가지를 검사해요.
-  1. 플러그인 4종 디렉터리/`plugin.rb` 존재, 제거한 플러그인 부재
+  1. 플러그인 3종 디렉터리/`plugin.rb` 존재, 제거한 플러그인 부재
   2. `frontend/discourse/dist/BUILD_INFO.json` 과 `dist/assets`, `app/assets/generated/<plugin>` 존재
   3. `nginx -t`
   4. `SKIP_DB_AND_REDIS=1 RAILS_ENV=production LOAD_PLUGINS=1 RAILS_DB=nonexistent bin/rails runner`

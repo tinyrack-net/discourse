@@ -56,4 +56,3 @@ hooks:
           - git clone https://github.com/discourse/discourse-doc-categories.git
           - git clone https://github.com/discourse/discourse-bbcode
           - git clone https://github.com/discourse/discourse-translator
-          - git clone https://github.com/discourse/discourse-prometheus
