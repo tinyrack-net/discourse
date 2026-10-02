@@ -8,7 +8,9 @@ expose:
 params:
   db_default_text_search_config: "pg_catalog.english"
   db_shared_buffers: "4096MB"
-  version: v2026.4.0
+  # 빌드 워크플로(.github/workflows/build.yml)가 --set params.version=v<X.Y.Z> 로 덮어쓴다.
+  # 빌드 시 여기 값은 Discourse 소스의 git ref 로 사용된다.
+  version: stable
 
 # docker_args: "--net=host"
 # docker_args: "--network=discourse_build_network"
@@ -17,6 +19,15 @@ env:
   LC_ALL: en_US.UTF-8
   LANG: en_US.UTF-8
   LANGUAGE: en_US.UTF-8
+
+  # Launcher V2 의 defaultBakeEnv 에 포함되어 이미지 ENV 로 구워진다.
+  # 빌드 단계에서는 DB/Redis 를 건드리지 않고, 파드가 뜰 때
+  # db:migrate -> assets:precompile(SKIP_EMBER_CLI_COMPILE=1) -> unicorn 순으로 수행한다.
+  MIGRATE_ON_BOOT: "1"
+  PRECOMPILE_ON_BOOT: "1"
+
+  # 아래 DISCOURSE_* 항목은 운영 클러스터가 주입하는 "런타임 계약"을 문서화한 것이다.
+  # 모두 Launcher 의 KnownSecrets 라서 이미지 ENV/ARG 로는 절대 구워지지 않는다.
   DISCOURSE_HOSTNAME: "forum.tinyrack.net"
   DISCOURSE_DB_HOST: ""
   DISCOURSE_DB_PORT: ""
@@ -42,9 +53,7 @@ hooks:
     - exec:
         cd: $home/plugins
         cmd:
-          - git clone https://github.com/discourse/docker_manager.git
           - git clone https://github.com/discourse/discourse-doc-categories.git
           - git clone https://github.com/discourse/discourse-bbcode
           - git clone https://github.com/discourse/discourse-translator
           - git clone https://github.com/discourse/discourse-prometheus
-          - git clone https://github.com/naidihr/discourse-category-headers

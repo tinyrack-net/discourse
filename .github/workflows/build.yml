@@ -1,64 +1,347 @@
-name: Build Latest Image
+name: Build Discourse Image
+
+# 운영 DB/Redis/Tailscale 에 전혀 접속하지 않고 빌드한다.
+# 업스트림 Launcher V2 의 build 단계는 pups --skip-tags=precompile,migrate,db 로 실행되므로
+# 플러그인/gem/node/Ember 빌드까지만 굽고, 마이그레이션과 나머지 프리컴파일은 파드 부팅으로 미룬다.
+# (containers/app.yml 의 MIGRATE_ON_BOOT/PRECOMPILE_ON_BOOT 참고)
 on:
+  schedule:
+    # 매일 03:00 KST (18:00 UTC)
+    - cron: "0 18 * * *"
   workflow_dispatch:
+    inputs:
+      force:
+        description: "이미 같은 버전 태그가 있어도 다시 빌드합니다 (v<version>.<n> 접미사 사용)"
+        type: boolean
+        default: false
+      version:
+        description: "빌드할 Discourse 버전 태그 (예: v2026.9.0). 비워두면 최신 stable 을 자동 선택합니다."
+        type: string
+        default: ""
+
+concurrency:
+  group: build-discourse-image
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/tinyrack-net/discourse
+  BASE_IMAGE: discourse/base:web-only-stable
+  PLUGINS: discourse-doc-categories,discourse-bbcode,discourse-translator,discourse-prometheus
+  BUILDKIT_PROGRESS: plain
+
+permissions:
+  contents: read
+  packages: write
 
 jobs:
-  build:
+  # 어떤 버전을 어떤 태그로 빌드할지 결정한다. 이미 있는 불변 태그는 건드리지 않는다.
+  resolve:
     runs-on: ubuntu-latest
-    environment: production
-    permissions:
-      contents: read
-      packages: write
-
+    outputs:
+      should_build: ${{ steps.resolve.outputs.should_build }}
+      version: ${{ steps.resolve.outputs.version }}
+      image_tag: ${{ steps.resolve.outputs.image_tag }}
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Clone discourse_docker repository
-        uses: actions/checkout@v4
-        with:
-          repository: discourse/discourse_docker
-          path: ./discourse_docker
-
-      - name: Connect to Cluster Network (Tailscale)
-        uses: tailscale/github-action@v3
-        with:
-          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
-          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
-          tags: tag:ci
-          args: --accept-routes
-
-      - name: Update app.yml with secrets
-        run: |
-          yq eval '.env.DISCOURSE_DB_HOST = "${{ secrets.DISCOURSE_DB_HOST }}"' -i containers/app.yml
-          yq eval '.env.DISCOURSE_DB_PORT = "${{ secrets.DISCOURSE_DB_PORT }}"' -i containers/app.yml
-          yq eval '.env.DISCOURSE_DB_NAME = "${{ secrets.DISCOURSE_DB_NAME }}"' -i containers/app.yml
-          yq eval '.env.DISCOURSE_DB_USERNAME = "${{ secrets.DISCOURSE_DB_USERNAME }}"' -i containers/app.yml
-          yq eval '.env.DISCOURSE_DB_PASSWORD = "${{ secrets.DISCOURSE_DB_PASSWORD }}"' -i containers/app.yml
-
-          yq eval '.env.DISCOURSE_REDIS_HOST = "${{ secrets.DISCOURSE_REDIS_HOST }}"' -i containers/app.yml
-          yq eval '.env.DISCOURSE_REDIS_PORT = "${{ secrets.DISCOURSE_REDIS_PORT }}"' -i containers/app.yml
-          yq eval '.env.DISCOURSE_REDIS_USERNAME = "${{ secrets.DISCOURSE_REDIS_USERNAME }}"' -i containers/app.yml
-          yq eval '.env.DISCOURSE_REDIS_PASSWORD = "${{ secrets.DISCOURSE_REDIS_PASSWORD }}"' -i containers/app.yml
-      
-      - name: Copy to discourse_docker
-        run: |
-          cp containers/app.yml ./discourse_docker/containers/app.yml
-      
-      - name: Build discourse_docker
-        run: |
-          cd ./discourse_docker
-          ./launcher bootstrap app
-     
-      - name: Log in to GitHub Container Registry
+      - name: Log in to GHCR
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
-          username: tinyrack94
-          password: ${{ secrets.GH_PAT }}
-    
-      - name: Push discourse docker image
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # GITHUB_TOKEN 은 저장소에 연결(link)된 패키지만 접근할 수 있다. GHCR 은 "없는 태그"와
+      # "권한 없음"을 모두 manifest unknown 으로 돌려주므로 실패로 단정할 수 없어 경고만 남긴다.
+      # (이미 존재하는 :latest 를 읽지 못한다면 거의 확실히 연결 문제다.)
+      - name: GHCR 접근 상태 점검
+        continue-on-error: true
         run: |
-          docker tag local_discourse/app ghcr.io/tinyrack-net/discourse:latest
-          docker tag local_discourse/app ghcr.io/tinyrack-net/discourse:${{ github.run_number }}
-          docker push ghcr.io/tinyrack-net/discourse:latest
-          docker push ghcr.io/tinyrack-net/discourse:${{ github.run_number }}
+          set -uo pipefail
+          if docker manifest inspect "${IMAGE}:latest" >/dev/null 2>&1; then
+            echo "GHCR 읽기 확인 완료 (${IMAGE}:latest)"
+          else
+            echo "::warning::${IMAGE}:latest 를 읽지 못했습니다. ${IMAGE} 패키지가 저장소에 연결되어 있지 않으면 GITHUB_TOKEN 으로 푸시할 수 없어요. GitHub → 조직 tinyrack-net → Packages → discourse → Package settings → 'Manage Actions access' 에서 저장소 'tinyrack-net/discourse' 를 Write 역할로 추가하세요."
+          fi
+
+      - name: Resolve target version and image tag
+        id: resolve
+        env:
+          GH_API_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          FORCE: ${{ inputs.force || 'false' }}
+          REQUESTED_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+
+          is_stable_version() { [[ "$1" =~ ^v[0-9]{4}\.[0-9]+\.[0-9]+$ ]]; }
+
+          # tag_exists <full image ref>
+          tag_exists() {
+            docker manifest inspect "$1" >/dev/null 2>&1
+          }
+
+          version="${REQUESTED_VERSION}"
+          if [[ -n "${version}" ]]; then
+            if ! is_stable_version "${version}"; then
+              echo "::error::version 입력은 vYYYY.M.P 형식이어야 합니다 (입력값: '${version}')"
+              exit 1
+            fi
+            echo "수동 지정 버전을 사용합니다: ${version}"
+          else
+            echo "discourse/discourse 태그 목록에서 최신 stable 버전을 조회합니다."
+            tags_file="$(mktemp)"
+            page_body="$(mktemp)"
+            for page in $(seq 1 20); do
+              curl -fsSL \
+                -H "Authorization: Bearer ${GH_API_TOKEN}" \
+                -H "Accept: application/vnd.github+json" \
+                "https://api.github.com/repos/discourse/discourse/tags?per_page=100&page=${page}" \
+                -o "${page_body}"
+              jq -r '.[].name' "${page_body}" >> "${tags_file}"
+              [[ "$(jq 'length' "${page_body}")" -lt 100 ]] && break
+            done
+            # discourse 는 GitHub Releases 를 쓰지 않고 git 태그를 릴리스로 사용한다.
+            version="$(grep -E '^v[0-9]{4}\.[0-9]+\.[0-9]+$' "${tags_file}" | sort -V | tail -n1)"
+            if [[ -z "${version}" ]]; then
+              echo "::error::stable 버전 태그를 찾지 못했습니다."
+              exit 1
+            fi
+            echo "최신 stable 버전: ${version}"
+          fi
+
+          image_tag="${version}"
+          should_build="true"
+
+          if tag_exists "${IMAGE}:${version}"; then
+            if [[ "${FORCE}" != "true" ]]; then
+              echo "${IMAGE}:${version} 이 이미 존재합니다. 재빌드하려면 force 옵션을 사용하세요."
+              should_build="false"
+            else
+              # 같은 Discourse 버전을 플러그인/베이스 변경 후 재빌드할 때만 .<n> 을 붙인다.
+              n=1
+              last=0
+              misses=0
+              while [[ "${n}" -le 100 && "${misses}" -lt 3 ]]; do
+                if tag_exists "${IMAGE}:${version}.${n}"; then
+                  last="${n}"
+                  misses=0
+                else
+                  misses=$((misses + 1))
+                fi
+                n=$((n + 1))
+              done
+              image_tag="${version}.$((last + 1))"
+              echo "force 재빌드이므로 ${IMAGE}:${image_tag} 로 빌드합니다."
+            fi
+          fi
+
+          echo "should_build=${should_build}" >> "${GITHUB_OUTPUT}"
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+          echo "image_tag=${image_tag}" >> "${GITHUB_OUTPUT}"
+
+          {
+            echo "## Discourse 이미지 빌드"
+            echo ""
+            echo "- Discourse 버전: \`${version}\`"
+            if [[ "${should_build}" == "true" ]]; then
+              echo "- 결과 태그: \`${image_tag}\`"
+            else
+              echo "- 결과: **스킵** — \`${IMAGE}:${version}\` 이 이미 존재합니다."
+            fi
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+  # 이미지를 만들어 **로컬에만** 두고, 5가지 검증을 모두 통과한 뒤에야 레지스트리에 푸시한다.
+  # (GHCR 은 push-by-digest 를 지원하지 않아서 digest 로 먼저 올린 뒤 태그하는 방식을 쓸 수 없다.)
+  build:
+    needs: resolve
+    if: needs.resolve.outputs.should_build == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    env:
+      IMAGE_TAG: ${{ needs.resolve.outputs.image_tag }}
+    steps:
+      - name: Checkout build configuration
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Checkout discourse_docker
+        uses: actions/checkout@v4
+        with:
+          repository: discourse/discourse_docker
+          fetch-depth: 1
+          path: discourse_docker
+
+      - name: Install Discourse Launcher V2
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /tmp/launcher.tar.gz \
+            https://get.discourse.org/launcher/latest/launcher-linux-amd64.tar.gz
+          tar -xzf /tmp/launcher.tar.gz -C discourse_docker/bin
+          discourse_docker/bin/launcher --version
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Copy app.yml into discourse_docker
+        run: cp containers/app.yml discourse_docker/containers/app.yml
+
+      - name: Build image
+        working-directory: discourse_docker
+        env:
+          VERSION: ${{ needs.resolve.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          # 주의: Launcher V2 는 positional config 인자 뒤의 플래그를 전부 docker build 로
+          # 그대로 전달한다. --set/--tag 는 반드시 config(app) 앞에 와야 한다.
+          bin/launcher build \
+            --set="params.version=${VERSION}" \
+            --set="base_image=${BASE_IMAGE}" \
+            --tag="${IMAGE}:${IMAGE_TAG}" \
+            app \
+            --load \
+            --label="org.opencontainers.image.version=${VERSION}" \
+            --label="org.opencontainers.image.created=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --label="org.opencontainers.image.revision=discourse_docker@$(git rev-parse HEAD),discourse@${{ github.sha }}" \
+            --label="org.opencontainers.image.source=https://github.com/${{ github.repository }}" \
+            --label="org.tinyrack.discourse.base-image=${BASE_IMAGE}" \
+            --label="org.tinyrack.discourse.plugins=${PLUGINS}"
+
+      - name: "Gate 1 — 플러그인 4종이 이미지에 포함되어 있는가"
+        env:
+          IMAGE_REF: ${{ env.IMAGE }}:${{ env.IMAGE_TAG }}
+        run: |
+          set -euo pipefail
+          docker run --rm --entrypoint /bin/bash "${IMAGE_REF}" -c '
+            set -euo pipefail
+            for plugin in discourse-doc-categories discourse-bbcode discourse-translator discourse-prometheus; do
+              test -d "/var/www/discourse/plugins/${plugin}" || { echo "::error::플러그인 디렉터리 누락: ${plugin}"; exit 1; }
+              test -f "/var/www/discourse/plugins/${plugin}/plugin.rb" || { echo "::error::plugin.rb 누락: ${plugin}"; exit 1; }
+              echo "ok: ${plugin}"
+            done
+            test ! -d /var/www/discourse/plugins/docker_manager || { echo "::error::docker_manager 가 제거되지 않았습니다"; exit 1; }
+            test ! -d /var/www/discourse/plugins/discourse-category-headers || { echo "::error::discourse-category-headers 가 제거되지 않았습니다"; exit 1; }
+          '
+
+      - name: "Gate 2 — Ember/플러그인 에셋 번들이 빌드되었는가"
+        env:
+          IMAGE_REF: ${{ env.IMAGE }}:${{ env.IMAGE_TAG }}
+        run: |
+          set -euo pipefail
+          # 최신 Discourse 는 public/assets 를 쓰지 않는다.
+          #   코어 Ember: frontend/discourse/dist (BUILD_INFO.json, assets, manifest, @embroider)
+          #   플러그인 JS: app/assets/generated/<plugin> (JsManager#compile!)
+          docker run --rm --entrypoint /bin/bash "${IMAGE_REF}" -c '
+            set -euo pipefail
+            dist=/var/www/discourse/frontend/discourse/dist
+            test -f "${dist}/BUILD_INFO.json" || { echo "::error::코어 Ember 빌드 산출물(BUILD_INFO.json)이 없습니다"; exit 1; }
+            test -n "$(ls -A "${dist}/assets" 2>/dev/null)" || { echo "::error::코어 Ember assets 디렉터리가 비어 있습니다"; exit 1; }
+            generated=/var/www/discourse/app/assets/generated
+            test -n "$(ls -A "${generated}" 2>/dev/null)" || { echo "::error::플러그인 에셋 디렉터리가 비어 있습니다"; exit 1; }
+            for plugin in discourse-doc-categories discourse-bbcode discourse-translator; do
+              test -d "${generated}/${plugin}" || { echo "::error::플러그인 에셋 누락: ${plugin}"; exit 1; }
+            done
+            echo "core ember: $(ls "${dist}/assets" | wc -l) entries"
+            echo "generated plugins: $(ls "${generated}" | wc -l) entries"
+          '
+
+      - name: "Gate 3 — nginx 설정 문법 검사"
+        env:
+          IMAGE_REF: ${{ env.IMAGE }}:${{ env.IMAGE_TAG }}
+        run: docker run --rm --entrypoint nginx "${IMAGE_REF}" -t
+
+      - name: "Gate 4 — 운영 DB/Redis 없이 Rails 부팅이 가능한가"
+        env:
+          IMAGE_REF: ${{ env.IMAGE }}:${{ env.IMAGE_TAG }}
+        run: |
+          set -uo pipefail
+          # 디스코드 자체 CI 와 동일한 게이트. 플러그인이 부팅 시점에 DB 를 건드리면 여기서 실패한다.
+          output="$(docker run --rm -w /var/www/discourse \
+            --entrypoint /bin/bash \
+            -e SKIP_DB_AND_REDIS=1 \
+            -e RAILS_ENV=production \
+            -e LOAD_PLUGINS=1 \
+            -e RAILS_DB=nonexistent \
+            "${IMAGE_REF}" -c 'bin/rails runner "puts :boot_ok"' 2>&1)"
+          rc=$?
+          echo "${output}"
+          if [[ "${rc}" -ne 0 ]]; then
+            echo "::error::DB 없는 Rails 부팅 검증이 종료 코드 ${rc} 로 실패했습니다."
+            exit 1
+          fi
+          grep -q '^boot_ok$' <<< "${output}" || { echo "::error::DB 없는 Rails 부팅 검증에 실패했습니다."; exit 1; }
+
+      - name: "Gate 5 — 런타임 시크릿이 이미지에 구워지지 않았는가"
+        env:
+          IMAGE_REF: ${{ env.IMAGE }}:${{ env.IMAGE_TAG }}
+        run: |
+          set -euo pipefail
+          envs="$(docker image inspect --format '{{json .Config.Env}}' "${IMAGE_REF}")"
+          echo "${envs}"
+          # KnownSecrets 는 Launcher 가 ARG/ENV 에서 제외하므로 이미지에 남으면 안 된다.
+          # (업스트림 이미지에도 있는 DISCOURSE_FORCE_HTTPS 같은 일반 설정과 구분하기 위해
+          #  특정 런타임 계약 키만 검사한다.)
+          if grep -Eq 'DISCOURSE_(DB_[A-Z]+|REDIS_[A-Z]+|SMTP_[A-Z]+|SECRET_KEY_BASE|HOSTNAME)=' <<< "${envs}"; then
+            echo "::error::런타임 시크릿이 이미지 ENV 에 포함되어 있습니다."
+            exit 1
+          fi
+
+      # 여기서부터가 실제 배포(publish) 단계다. 위 검증을 모두 통과해야만 도달한다.
+      - name: Push verified image and move stable tag
+        id: push
+        run: |
+          set -euo pipefail
+
+          # 불변 태그를 절대 덮어쓰지 않는다. resolve 가 오탐(네트워크 오류 등)으로 태그를
+          # 없다고 판단했더라도 여기서 막는다. force 재빌드는 .<n> 태그를 쓰므로 충돌하지 않는다.
+          if docker manifest inspect "${IMAGE}:${IMAGE_TAG}" >/dev/null 2>&1; then
+            echo "::error::${IMAGE}:${IMAGE_TAG} 이 이미 존재합니다. 불변 태그는 덮어쓰지 않습니다."
+            exit 1
+          fi
+
+          if ! docker push "${IMAGE}:${IMAGE_TAG}"; then
+            echo "::error::${IMAGE}:${IMAGE_TAG} 푸시에 실패했습니다. GITHUB_TOKEN 은 저장소에 연결(link)된 패키지만 접근할 수 있어요. GitHub → 조직 tinyrack-net → Packages → discourse → Package settings → 'Manage Actions access' 에서 저장소 'tinyrack-net/discourse' 를 Write 역할로 추가하세요."
+            exit 1
+          fi
+
+          # stable 은 같은 다이제스트를 가리키는 이동 태그다. 운영 매니페스트에는 쓰지 않는다.
+          docker tag "${IMAGE}:${IMAGE_TAG}" "${IMAGE}:stable"
+          docker push "${IMAGE}:stable"
+
+          digest="$(docker image inspect --format '{{index .RepoDigests 0}}' "${IMAGE}:${IMAGE_TAG}" | sed 's/.*@//')"
+          echo "digest=${digest}" >> "${GITHUB_OUTPUT}"
+          echo "푸시 완료: ${IMAGE}:${IMAGE_TAG} (${digest})"
+
+      - name: Job summary
+        env:
+          VERSION: ${{ needs.resolve.outputs.version }}
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          set -euo pipefail
+          {
+            echo "## Discourse 이미지 빌드 완료"
+            echo ""
+            echo "| 항목 | 값 |"
+            echo "| --- | --- |"
+            echo "| Discourse 버전 | \`${VERSION}\` |"
+            echo "| 불변 태그 | \`${IMAGE}:${IMAGE_TAG}\` |"
+            echo "| 이동 태그 | \`${IMAGE}:stable\` (운영 반영에 쓰지 말 것) |"
+            echo "| 다이제스트 | \`${DIGEST}\` |"
+            echo "| 베이스 이미지 | \`${BASE_IMAGE}\` |"
+            echo "| 플러그인 | \`${PLUGINS}\` |"
+            echo ""
+            echo "### 운영 반영 (수동)"
+            echo ""
+            echo '```bash'
+            echo "kubectl --context tinyrack -n discourse-system set image deployment/discourse discourse=${IMAGE}:${IMAGE_TAG}"
+            echo '```'
+            echo ""
+            echo "- Deployment 에 \`strategy.type: Recreate\` 와 \`startupProbe\`(httpGet \`/\`:80, \`periodSeconds: 10\`, \`failureThreshold: 60\`)가 있어야 합니다."
+            echo "- 부팅 시 \`db:migrate\` → \`assets:precompile\` → unicorn 순으로 실행되므로 1~3분 정도 다운타임이 발생합니다."
+            echo "- 새 버전 마이그레이션이 이미 실행됐다면 이전 태그로의 롤백이 불가할 수 있습니다."
+          } >> "${GITHUB_STEP_SUMMARY}"
