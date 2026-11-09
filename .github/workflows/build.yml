@@ -171,11 +171,17 @@ jobs:
           path: discourse_docker
 
       - name: Install Discourse Launcher V2
+        env:
+          LAUNCHER_VERSION: v2.6.7
         run: |
           set -euo pipefail
-          curl -fsSL -o /tmp/launcher.tar.gz \
-            https://get.discourse.org/launcher/latest/launcher-linux-amd64.tar.gz
-          tar -xzf /tmp/launcher.tar.gz -C discourse_docker/bin
+          # GitHub 릴리스 에셋 CDN 이 간헐적으로 5xx 를 돌려주므로 고정 버전을 재시도하며 받는다.
+          base="https://github.com/discourse/launcher/releases/download/${LAUNCHER_VERSION}"
+          for f in launcher-linux-amd64.tar.gz launcher-linux-amd64.tar.gz.md5; do
+            curl -fsSL --retry 5 --retry-all-errors --retry-delay 10 -o "/tmp/${f}" "${base}/${f}"
+          done
+          echo "$(cat /tmp/launcher-linux-amd64.tar.gz.md5)  /tmp/launcher-linux-amd64.tar.gz" | md5sum -c -
+          tar -xzf /tmp/launcher-linux-amd64.tar.gz -C discourse_docker/bin
           discourse_docker/bin/launcher --version
 
       - uses: docker/setup-buildx-action@v3
