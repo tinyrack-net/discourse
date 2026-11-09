@@ -254,7 +254,11 @@ jobs:
       - name: "Gate 3 — nginx 설정 문법 검사"
         env:
           IMAGE_REF: ${{ env.IMAGE }}:${{ env.IMAGE_TAG }}
-        run: docker run --rm --entrypoint nginx "${IMAGE_REF}" -t
+        # 베이스 이미지는 /var/log/nginx 를 포함하지 않고 runit 1단계(00-fix-var-logs)가 부팅 시 만든다.
+        # 운영과 같은 순서로 로그 디렉터리를 준비한 뒤 문법을 검사한다.
+        run: |
+          docker run --rm --entrypoint /bin/bash "${IMAGE_REF}" \
+            -c 'set -e; /etc/runit/1.d/00-fix-var-logs; nginx -t'
 
       - name: "Gate 4 — 운영 DB/Redis 없이 Rails 부팅이 가능한가"
         env:
